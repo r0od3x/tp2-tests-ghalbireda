@@ -24,15 +24,10 @@ import dev.langchain4j.model.openai.OpenAiChatModel;
  */
 public class Test1 {
 
-    /**
-     * Nom du modele. Un des modeles les moins couteux, pour economiser le quota.
-     */
+
     private static final String NOM_MODELE = "gpt-4o-mini";
 
-    /**
-     * Temperature demandee par l'enonce. Plus elle est elevee, plus les reponses
-     * sont variees ; a 0 le modele est presque deterministe.
-     */
+
     private static final double TEMPERATURE = 0.7;
 
     public static void main(String[] args) {
@@ -68,8 +63,8 @@ public class Test1 {
     /**
      * Envoie une question au LLM et affiche la question puis la reponse.
      *
-     * @param modele   le modele de chat qui represente le LLM.
-     * @param question la question a poser.
+     * @param modele    LLM.
+     * @param question  la question a poser.
      */
     private static void poserQuestion(ChatModel modele, String question) {
         System.out.println("== Question :");
