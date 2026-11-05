@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>ma.emsi.ghalbireda</groupId>
+    <artifactId>tp2-tests-ghalbireda</artifactId>
+    <version>1.0-SNAPSHOT</version>
+    <name>tp2-tests-ghalbireda</name>
+    <packaging>jar</packaging>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>25</maven.compiler.release>
+        <!-- Meme numero de version pour toutes les dependances LangChain4j. -->
+        <langchain4j.version>1.23.0</langchain4j.version>
+        <langchain4j.beta.version>1.23.0-beta33</langchain4j.beta.version>
+        <junit.version>5.13.2</junit.version>
+    </properties>
+
+    <dependencies>
+        <!-- Coeur de LangChain4j. -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+        <!-- Acces a l'API de Gemini (GoogleGenAiChatModel, GoogleGenAiEmbeddingModel). -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-google-genai</artifactId>
+            <version>${langchain4j.beta.version}</version>
+        </dependency>
+        <!-- Implementation concrete de logging pour SLF4J (configuree par logback.xml). -->
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>1.6.6</version>
+        </dependency>
+
+        <!-- TEST 4 (embeddings) : modele d'embeddings integre, sans cout en tokens.
+             A METTRE EN COMMENTAIRE avant le test 5 : conflit avec easy-rag. -->
+        <!--
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-embeddings-bge-small-en-v15</artifactId>
+            <version>${langchain4j.beta.version}</version>
+        </dependency>
+        -->
+
+        <!-- TESTS 5 et 6 (RAG) : a decommenter au test 5, apres avoir mis en
+             commentaire la dependance bge-small ci-dessus. -->
+        <!--
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-easy-rag</artifactId>
+            <version>${langchain4j.beta.version}</version>
+        </dependency>
+        -->
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.16.0</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>
