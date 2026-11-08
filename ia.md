@@ -252,3 +252,100 @@ la meme raison.
 Pour ce test je garde le code simple parce que je sais que OpenAI renvoie les
 compteurs. Dans du vrai code, je testerais `tokenUsage() != null` avant, ou
 j'utiliserais `Integer` plutot que `int`.
+
+---
+
+## Test 3 : un traducteur
+
+### Q : jai mis `{texte}` dans mon template et il remplace pas la variable, il envoie `{texte}` tel quel au llm
+
+Il faut des doubles accolades : `{{texte}}`. Avec une seule paire, LangChain4j ne
+reconnait pas la variable et laisse le texte tel quel, donc le LLM recoit
+litteralement "Traduis le texte suivant en anglais : {texte}". Et comme c'est un
+LLM, il ne plante pas : il repond quelque chose, souvent en traduisant le mot
+"texte" ou en demandant quel texte traduire. C'est ce qui rend l'erreur penible a
+reperer, il n'y a aucune exception.
+
+La syntaxe correcte :
+
+```java
+PromptTemplate template =
+        PromptTemplate.from("Traduis le texte suivant en anglais : {{texte}}");
+```
+
+Et le nom entre les accolades doit etre exactement la cle utilisee dans la Map
+passee a `apply()`. Si les deux ne correspondent pas, LangChain4j leve bien une
+exception, ce qui est plus facile a diagnostiquer que le cas des accolades
+simples.
+
+### Q : `template.apply()` il attend quoi comme parametre ? jai vu les 2 versions dans la javadoc
+
+Il y a deux versions :
+
+- `apply(Map<String, Object>)` : la Map associe chaque nom de variable a sa
+  valeur. C'est la version a utiliser des qu'il y a plusieurs variables, et c'est
+  celle que j'utilise partout pour rester coherent.
+- `apply(Object)` : raccourci quand le template n'a qu'une seule variable.
+  LangChain4j met l'objet dans la seule variable du template.
+
+Donc pour mon template a deux variables :
+
+```java
+Prompt prompt = template.apply(Map.of("langue", "espagnol", "texte", phrase));
+String reponse = modele.chat(prompt.text());
+```
+
+Attention au dernier point : `apply()` retourne un `Prompt`, pas une `String`.
+Il faut appeler `prompt.text()` pour recuperer le texte a envoyer. Si on passe le
+`Prompt` directement a une methode qui attend une String, ca ne compile pas.
+
+### Q : avec le meme template jai eu "couch" la premiere fois et "sofa" la deuxieme, pour la meme phrase. normal ?
+
+Oui, et c'est la temperature. Elle est a 0,7 comme demande par l'enonce.
+
+Un LLM ne choisit pas le mot suivant de maniere unique : il calcule une
+distribution de probabilites sur tous les tokens possibles, puis en tire un au
+hasard selon cette distribution. La temperature regle a quel point ce tirage est
+aleatoire :
+
+- temperature 0 : il prend quasiment toujours le token le plus probable, les
+  reponses sont presque deterministes et donc reproductibles ;
+- temperature elevee : les tokens moins probables ont plus de chances de sortir,
+  les reponses sont plus variees mais aussi plus risquees.
+
+"Couch" et "sofa" sont deux traductions correctes de "canape" avec des
+probabilites proches, donc a 0,7 les deux sortent. Ca n'a rien de genant ici.
+
+En revanche, pour un vrai traducteur en production, je mettrais la temperature
+plus bas (0 ou 0,2) : on veut une traduction stable, pas de la creativite. La
+temperature elevee a un sens pour de la redaction ou du brainstorming.
+
+### Q : pour larabe il ma pas juste traduit, il ma répondu `Le texte "..." se traduit en arabe par : "..."`. comment je lui fait sortir que la traduction ?
+
+Sortie obtenue :
+
+```
+== Prompt envoye :
+Traduis le texte suivant en arabe : Le chat de Pierre dort sur le canape.
+== Traduction :
+Le texte "Le chat de Pierre dort sur le canape." se traduit en arabe par : "..."
+```
+
+Le LLM a fait ce qu'on lui a demande, mais il a ajoute une phrase d'introduction
+autour. Rien dans mon prompt ne dit de ne renvoyer que la traduction, donc il
+adopte un ton d'assistant qui explique. C'est un probleme classique quand la
+reponse doit etre reutilisee par un programme et pas lue par un humain.
+
+Deux facons de corriger :
+
+1. preciser dans le template : "Traduis le texte suivant en {{langue}}. Reponds
+   uniquement avec la traduction, sans aucun commentaire ni guillemets :
+   {{texte}}" ;
+2. mieux : passer cette consigne dans un message systeme, qui sert justement a
+   fixer le role et le format de reponse de l'assistant, et laisser le message
+   utilisateur ne contenir que la donnee a traiter.
+
+C'est la deuxieme solution que l'application Web du TP utilisera, avec le role
+systeme choisi dans la liste deroulante ("Traducteur" par exemple). J'ai garde le
+template simple de l'enonce pour ce test, mais ca montre bien pourquoi le message
+systeme existe.
