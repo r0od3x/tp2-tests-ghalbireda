@@ -56,15 +56,18 @@
         </dependency>
         -->
 
-        <!-- TESTS 5 et 6 (RAG) : a decommenter au test 5, apres avoir mis en
-             commentaire la dependance bge-small ci-dessus. -->
-        <!--
+        <!-- TESTS 5 et 6 (RAG) : EasyRAG, decommentee au test 5.
+             La dependance bge-small ci-dessus reste en commentaire, comme le
+             demande l'enonce, parce qu'elle entre en conflit avec easy-rag.
+             Pas besoin de la reactiver pour le test 4 : easy-rag fournit deja
+             la version quantifiee du meme modele d'embeddings
+             (BgeSmallEnV15QuantizedEmbeddingModel), utilisee par Test4Embeddings.
+             Du coup tous les tests restent compilables en meme temps. -->
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-easy-rag</artifactId>
             <version>${langchain4j.beta.version}</version>
         </dependency>
-        -->
 
         <dependency>
             <groupId>org.junit.jupiter</groupId>

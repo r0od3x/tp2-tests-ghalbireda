@@ -349,3 +349,170 @@ C'est la deuxieme solution que l'application Web du TP utilisera, avec le role
 systeme choisi dans la liste deroulante ("Traducteur" par exemple). J'ai garde le
 template simple de l'enonce pour ce test, mais ca montre bien pourquoi le message
 systeme existe.
+
+---
+
+## Test 4 : embeddings et similarite
+
+### Q : lenoncé dit de mettre la dependance bge-small en commentaire avant le test 5 a cause dun conflit. mais si je la commente, Test4Embeddings compile plus ? je fais comment
+
+Le conflit est reel : `langchain4j-embeddings-bge-small-en-v15` et
+`langchain4j-easy-rag` amenent tous les deux un modele d'embeddings bge-small, et
+avoir les deux dans le classpath pose probleme. D'ou la consigne de l'enonce.
+
+Mais commenter la dependance en gardant le code du test 4 qui l'utilise casse la
+compilation de tout le projet, pas seulement du test 4. Et comme je dois faire un
+commit par test, ca voudrait dire que les commits des tests 5 a 7 contiennent un
+projet qui ne compile pas.
+
+La solution vient de ce que `easy-rag` embarque deja le meme modele, mais en
+version **quantifiee** : `langchain4j-embeddings-bge-small-en-v15-q`, avec la
+classe `BgeSmallEnV15QuantizedEmbeddingModel`. Verification dans le classpath :
+
+```
+langchain4j-embeddings-bge-small-en-v15-q-1.23.0-beta33.jar
+onnxruntime-1.23.2.jar
+```
+
+Donc en ecrivant le test 4 avec la version quantifiee, je n'ai besoin que de
+`easy-rag` : plus de conflit, et tous les tests compilent en meme temps a chaque
+commit. La dependance bge-small reste en commentaire dans le `pom.xml`, comme le
+demande l'enonce, avec un commentaire qui explique pourquoi elle n'a pas besoin
+d'etre reactivee.
+
+Quantifie veut dire que les poids du modele sont stockes sur moins de bits (8 au
+lieu de 32). Le fichier est plus petit et le calcul plus rapide, au prix d'une
+precision legerement moindre. Pour comparer des scores de similarite entre eux,
+ca ne change rien.
+
+### Q : `modele.embed(phrase)` me rend un `Response<Embedding>` et `CosineSimilarity.between()` veut des `Embedding`, jai une erreur de compil
+
+Il faut appeler `.content()` sur la `Response` :
+
+```java
+Embedding embedding1 = modele.embed(phrase1).content();
+Embedding embedding2 = modele.embed(phrase2).content();
+double similarite = CosineSimilarity.between(embedding1, embedding2);
+```
+
+`Response<T>` est un emballage que LangChain4j utilise pour renvoyer un resultat
+accompagne de ses metadonnees : `content()` donne le resultat lui-meme
+(l'embedding), et il y a aussi `tokenUsage()` et `finishReason()` a cote. C'est
+le meme principe que `ChatResponse` au test 2, ou il fallait `aiMessage().text()`
+pour arriver au texte. L'enonce le precise d'ailleurs : "pour recuperer les
+embeddings a partir des reponses du modele d'embeddings, utilisez la methode
+content()".
+
+### Q : le modele local me donne 0.6771 pour 2 phrases opposées et 0.6437 pour 2 phrases qui veulent dire pareil. cest pas censé etre le contraire ??
+
+Si, et c'est precisement le defaut que l'enonce veut faire constater. Mes
+resultats :
+
+```
+1. Deux phrases similaires (meme sens, mots differents)
+   A : Le chat dort sur le canape.
+   B : Un felin se repose sur le sofa.
+   local   : 0.6437
+   externe : 0.6576
+
+2. Deux phrases opposees (meme sujet, avis contraire)
+   A : J'adore ce film, c'est un chef d'oeuvre.
+   B : Je deteste ce film, c'est une catastrophe.
+   local   : 0.6771
+   externe : 0.6544
+```
+
+Le modele local classe donc les phrases opposees **au-dessus** des phrases
+synonymes. L'ordre est inverse, et c'est l'ordre qui compte pour le RAG.
+
+Deux raisons se cumulent :
+
+1. `BgeSmallEnV15` a ete entraine sur de l'anglais. Sur du francais il ne
+   comprend pas vraiment le sens, il reagit surtout a la forme des mots. "Le chat
+   dort sur le canape" et "Un felin se repose sur le sofa" n'ont presque aucun
+   mot en commun, donc il ne voit pas qu'elles disent la meme chose.
+2. Meme pour un bon modele, deux phrases opposees sont intrinsequement proches :
+   meme sujet, meme vocabulaire, meme structure. Le modele externe donne lui
+   aussi 0,6544, ce qui reste eleve. Un embedding capture le theme bien plus que
+   la polarite, et c'est une limite generale, pas un bug : pour de l'analyse de
+   sentiment on n'utilise pas des embeddings bruts.
+
+### Q : et pourquoi le local me sort 0.6286 pour 2 phrases qui ont rien a voir, alors que celui dopenai sort 0.1099 ?
+
+```
+3. Deux phrases sans aucun rapport
+   A : La capitale de la France est Paris.
+   B : Il faut trois oeufs pour cette recette de gateau.
+   local   : 0.6286
+   externe : 0.1099
+```
+
+C'est le resultat le plus parlant de ce test. Le modele externe fait son travail :
+0,11, c'est-a-dire "aucun rapport". Le modele local repond 0,63 pour les memes
+deux phrases, soit quasiment le meme score qu'il donnait a deux phrases
+synonymes au couple 1.
+
+Autrement dit, le modele local ecrase tout dans une bande etroite autour de 0,6
+et ne distingue plus rien. Ce n'est pas que ses valeurs soient "trop hautes", le
+probleme est qu'elles ne **separent** plus les cas. Pour du francais, il est
+inutilisable.
+
+La consequence pour les tests 5 et 6 est directe : EasyRAG utilise ce modele
+local par defaut. Sur `infos.txt`, qui contient trois phrases, ca marche quand
+meme parce qu'il suffit de ramener les trois. Sur le PDF du test 6, decoupe en
+dizaines de morceaux, le RAG va souvent ramener les mauvais morceaux, et les
+reponses s'en ressentiront. L'enonce previent d'ailleurs que les reponses du test
+6 pourront etre decevantes, et c'est la premiere des raisons qu'il donne.
+
+Le couple 7 confirme le diagnostic :
+
+```
+7. Une phrase et sa traduction en anglais
+   A : Le chat de Pierre dort sur le canape.
+   B : Pierre's cat is sleeping on the couch.
+   local   : 0.4828
+   externe : 0.7413
+```
+
+Une phrase et sa traduction ont exactement le meme sens, donc le score devrait
+etre tres eleve. Le modele externe donne 0,74. Le modele local donne 0,48, son
+score le plus bas de tout le test : il ne voit aucun lien entre une phrase et sa
+traduction, alors que c'est le cas le plus evident de similarite semantique.
+
+### Q : pourquoi le vecteur local fait 384 et celui dopenai 1536 ? ca change quoi
+
+C'est le nombre de dimensions de l'espace dans lequel le modele place les textes.
+Chaque embedding est un tableau de `float` de cette taille, et c'est une
+caracteristique fixe du modele.
+
+Plus de dimensions, c'est plus de place pour encoder des nuances, donc en general
+une meilleure qualite, mais aussi plus de memoire et des calculs plus lourds
+(1536 multiplications par comparaison au lieu de 384).
+
+Le point important : **on ne peut pas comparer des embeddings qui viennent de
+modeles differents.** Les dimensions ne representent pas les memes choses, et ici
+les tailles ne correspondent meme pas. Consequence concrete pour le RAG : si on
+change de modele d'embeddings, il faut refaire l'ingestion de tous les documents,
+sinon la base vectorielle contient des vecteurs incomparables avec ceux des
+questions.
+
+### Q : jai eu `WARNING: A restricted method in java.lang.System has been called` ... `by ai.onnxruntime.OnnxRuntime`. jai un probleme ?
+
+Non, et ca n'a rien a voir avec mon code.
+
+Le modele local ne tourne pas en Java : c'est un vrai reseau de neurones execute
+par ONNX Runtime, une bibliotheque native (du code C++). Pour la charger, le
+binding Java doit appeler `System.load()`, qui ouvre une bibliotheque native
+depuis la JVM.
+
+Depuis les JDK recents, l'acces au code natif est en cours de restriction (JEP
+"Integrity by Default") : la JVM previent maintenant quand une bibliotheque fait
+ca sans y avoir ete autorisee explicitement, et dans une version future ce sera
+bloque par defaut. Pour faire taire l'avertissement, il faudrait lancer avec
+`--enable-native-access=ALL-UNNAMED`, comme le message le suggere lui-meme.
+
+Au passage ca explique pourquoi le premier appel au modele local est nettement
+plus lent que les suivants : il faut charger la bibliotheque native et les poids
+du modele en memoire. Les appels suivants sont rapides, et surtout ils ne coutent
+rien en tokens puisque tout se passe sur ma machine, ce qui est bien l'interet
+d'un modele integre pour ce test.
