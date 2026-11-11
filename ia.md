@@ -516,3 +516,157 @@ plus lent que les suivants : il faut charger la bibliotheque native et les poids
 du modele en memoire. Les appels suivants sont rapides, et surtout ils ne coutent
 rien en tokens puisque tout se passe sur ma machine, ce qui est bien l'interet
 d'un modele integre pour ce test.
+
+---
+
+## Test 5 : RAG 1 avec EasyRAG
+
+### Q : cest quoi exactement AiServices ? jai jamais implementé mon interface Assistant et pourtant `assistant.chat(...)` marche
+
+C'est un proxy, construit a l'execution. Je declare seulement ce que je veux :
+
+```java
+public interface Assistant {
+    String chat(String question);
+}
+```
+
+et `AiServices` fabrique une classe qui implemente cette interface, sans que je
+l'ecrive. C'est le mecanisme des proxies dynamiques de Java
+(`java.lang.reflect.Proxy`) : on peut creer a l'execution un objet qui implemente
+n'importe quelle interface, et rediriger tous ses appels de methode vers un
+gestionnaire unique.
+
+Ici le gestionnaire fait tout le travail que j'aurais du ecrire a la main :
+
+```java
+Assistant assistant = AiServices.builder(Assistant.class)
+        .chatModel(modele)
+        .chatMemory(MessageWindowChatMemory.withMaxMessages(20))
+        .contentRetriever(EmbeddingStoreContentRetriever.from(baseVectorielle))
+        .build();
+```
+
+A chaque appel a `chat(question)`, le proxy enchaine : calcul de l'embedding de
+la question, recherche des segments les plus similaires dans la base
+vectorielle, ajout de ces segments a la question, ajout de l'historique de la
+conversation, envoi au LLM, puis extraction du texte de la reponse et mise a jour
+de la memoire. Tout ca est derriere un seul appel de methode.
+
+L'interet est que l'interface decrit l'intention et pas la plomberie : je peux
+ajouter le RAG, la memoire ou des outils (test 7) en changeant uniquement le
+builder, sans toucher a l'interface ni au code qui l'appelle.
+
+### Q : pendant lingestion jai `ERROR Log4j API could not find a logging provider`, jai cassé qqchose ?
+
+Non, le programme fonctionne, l'ingestion s'est bien terminee. C'est juste un
+message, malgre le mot ERROR.
+
+L'origine : `easy-rag` amene Apache Tika (le parseur de documents, capable de
+lire txt, pdf, docx...), et Tika utilise **Log4j** pour ses logs, alors que mon
+projet a configure **Logback** via SLF4J. Log4j ne trouve donc aucune
+implementation et le signale. C'est exactement le meme probleme que
+l'avertissement SLF4J du test 1, mais dans l'autre sens : cette fois c'est une
+facade de logging qui n'a pas d'implementation.
+
+Pour le faire disparaitre proprement, on ajoute le pont
+`org.apache.logging.log4j:log4j-to-slf4j`, qui redirige les appels Log4j vers
+SLF4J, donc vers Logback qui est deja configure. Je ne l'ai pas fait parce que
+l'enonce dit d'ignorer ces messages, mais c'est bon a savoir si le logging du
+test 7 devient illisible.
+
+### Q : pourquoi lassistant repond Felix alors que sans RAG il savait pas ? le fichier entier est envoyé au llm ?
+
+Le contraste est net dans ma sortie :
+
+```
+##### SANS RAG (le LLM seul) #####
+== Question : Comment s'appelle le chat de Pierre ?
+== Reponse :
+Je ne sais pas comment s'appelle le chat de Pierre, car cela depend du contexte
+ou de l'histoire dont vous parlez. [...]
+
+##### AVEC RAG (infos.txt) #####
+== Question : Comment s'appelle le chat de Pierre ?
+== Reponse :
+Le chat de Pierre s'appelle Felix.
+```
+
+Le LLM n'a rien appris entre les deux : c'est le meme modele, avec les memes
+poids. Ce qui a change, c'est ce qu'on lui envoie. Le RAG a insere les
+informations pertinentes dans la requete, donc la reponse etait litteralement
+sous ses yeux au moment de repondre.
+
+Et non, le fichier entier n'est pas envoye, meme si ici il est si petit que ca ne
+fait pas de difference. Le principe est de n'envoyer que les segments les plus
+similaires a la question (par defaut `EmbeddingStoreContentRetriever` en prend
+les 3 plus proches). C'est ce qui rend le RAG utilisable sur un gros document :
+au test 6 le PDF fera des dizaines de segments et seuls quelques-uns partiront
+avec chaque question. Envoyer tout serait impossible, a cause de la fenetre de
+contexte du modele et du cout en tokens d'entree calcule au test 2.
+
+La question suivante montre bien que le LLM ne se contente pas de recopier :
+
+```
+== Question : Pierre appelle son chat. Qu'est-ce qu'il pourrait dire ?
+== Reponse : Pierre pourrait dire : "Felix, viens ici !" ou "Felix, viens jouer !"
+```
+
+L'information "Felix" vient du fichier, mais la phrase, elle, vient des capacites
+linguistiques acquises pendant l'entrainement. C'est bien la combinaison des deux
+qu'on cherche avec le RAG, le "augmented" de Retrieval-Augmented Generation.
+
+### Q : jai remplacé Paris par Marseille dans infos.txt et il me repond que la capitale de la France est Marseille. pourquoi il se laisse avoir alors quil sait que cest Paris ?
+
+Resultat obtenu avec la derniere ligne de `infos.txt` changee en
+"La capitale de la France est Marseille." :
+
+```
+== Question :
+Quelle est la capitale de la France ?
+== Reponse :
+La capitale de la France est Marseille.
+```
+
+Sans configuration particuliere, les informations recuperees par le RAG
+l'emportent sur les connaissances acquises pendant l'entrainement. Le prompt que
+LangChain4j construit place les segments recuperes comme un contexte a utiliser
+pour repondre, et le modele est entraine a suivre le contexte qu'on lui fournit
+plutot qu'a le contester.
+
+Et c'est **voulu**, meme si l'exemple fait sourire. C'est le mecanisme qui rend
+le RAG utile en entreprise : les documents fournis sont censes etre plus fiables
+et plus a jour que ce que le modele a memorise. Une procedure interne modifiee le
+mois dernier, un tarif de cette annee, un dossier client, rien de tout ca n'est
+dans l'entrainement, et on veut que le document gagne. C'est aussi ce qui reduit
+les hallucinations : plutot que d'inventer, le modele s'appuie sur une source.
+
+La contrepartie est que la qualite des reponses depend entierement de la qualite
+des documents : si le RAG est alimente avec des informations fausses, il les
+restituera avec aplomb. Garbage in, garbage out.
+
+A noter que la reponse n'est pas garantie : selon le LLM et sa version, certains
+signalent la contradiction ("d'apres le document fourni, Marseille, mais en
+realite la capitale de la France est Paris"). Ici gpt-4o-mini a suivi le document
+sans commentaire. J'ai remis Paris dans `infos.txt` apres le test.
+
+### Q : pourquoi on met une `chatMemory` dans Test5Rag1 alors que mes 3 questions sont indépendantes ?
+
+Pour ce test precis elle ne sert effectivement pas a grand-chose, mais elle ne
+gene pas et elle est deja la pour la suite.
+
+Ce qu'elle apporte des qu'on en a besoin : c'est elle qui corrige le probleme
+constate au test 1, ou le LLM avait oublie mon prenom d'une question a l'autre.
+`MessageWindowChatMemory.withMaxMessages(20)` garde les 20 derniers messages et
+les renvoie automatiquement a chaque requete, donc l'assistant peut comprendre
+"et le chien de Jacques ?" apres une question sur le chat de Pierre.
+
+La fenetre de 20 messages est une limite volontaire : sans elle, l'historique
+grossirait indefiniment et chaque requete accumulerait de plus en plus de tokens
+d'entree (donc de cout, cf. test 2), jusqu'a depasser la fenetre de contexte du
+modele. Quand on arrive a 20, les messages les plus anciens sont oublies.
+
+Elle devient indispensable au test 6, ou on pose plusieurs questions dans la meme
+session, et au test 7, ou l'utilisation des outils genere elle-meme des messages
+supplementaires (la demande d'appel de l'outil et son resultat) qui doivent
+rester dans l'historique pour que le LLM puisse formuler sa reponse finale.
