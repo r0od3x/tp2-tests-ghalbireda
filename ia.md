@@ -670,3 +670,120 @@ Elle devient indispensable au test 6, ou on pose plusieurs questions dans la mem
 session, et au test 7, ou l'utilisation des outils genere elle-meme des messages
 supplementaires (la demande d'appel de l'outil et son resultat) qui doivent
 rester dans l'historique pour que le LLM puisse formuler sa reponse finale.
+
+---
+
+## Test 6 : RAG 2, sur le PDF du support de cours
+
+### Q : jai juste remplacé infos.txt par llm.pdf et ca marche ? jai rien changé dautre dans le code
+
+Oui, et c'est voulu. Le chargement passe par la meme ligne :
+
+```java
+Document document = FileSystemDocumentLoader.loadDocument(chemin);
+```
+
+Quand on ne precise pas de `DocumentParser`, LangChain4j en cherche un dans le
+classpath. `easy-rag` amene `langchain4j-document-parser-apache-tika`, donc c'est
+Apache Tika qui est utilise, et Tika sait lire beaucoup de formats : txt, pdf,
+docx, html, odt... Le format du fichier est detecte automatiquement, et le reste
+du code travaille sur un `Document`, sans savoir d'ou il vient.
+
+C'est un bon exemple de ce que l'abstraction de LangChain4j apporte : le meme
+code d'ingestion marche pour un fichier de trois lignes et pour un support de
+cours de plusieurs dizaines de pages.
+
+La difference se voit a l'execution :
+
+```
+Ingestion terminee en 9798 ms.
+Taille du texte extrait : 65441 caracteres.
+```
+
+65 441 caracteres, la ou `infos.txt` en faisait une centaine. Cette fois le
+decoupage en segments sert vraiment a quelque chose.
+
+### Q : lingestion prend presque 10 secondes, cest normal ? et ca me coute des tokens ?
+
+C'est normal, et non, ca ne coute rien en tokens.
+
+Ce qui prend du temps, dans l'ordre : l'extraction du texte du PDF par Tika,
+puis le decoupage en segments, puis le calcul de l'embedding de **chaque**
+segment. C'est cette derniere etape qui domine : il y a des dizaines de segments,
+et chacun passe dans le reseau de neurones du modele d'embeddings.
+
+Mais ce modele est celui d'EasyRAG, qui tourne **en local** sur ma machine (le
+bge-small quantifie du test 4, via ONNX Runtime). Aucune requete reseau, donc
+aucun token facture. Seules les questions posees ensuite au LLM coutent quelque
+chose.
+
+L'enonce previent justement du contraire si on utilise un modele d'embeddings
+externe : avec un compte gratuit, calculer l'embedding de tous les segments d'un
+gros PDF peut depasser la limite de requetes par minute en une seule execution.
+C'est un vrai argument pour garder le modele local pendant l'ingestion.
+
+A noter aussi que la base vectorielle est un `InMemoryEmbeddingStore` : tout est
+perdu a la fin du programme, et les 10 secondes sont donc repayees a chaque
+lancement. Dans une vraie application on utiliserait une base vectorielle
+persistante, pour n'ingerer qu'une fois.
+
+### Q : jai posé ma 2eme question en commencant par "Et comment on mesure la similarite..." et il a compris de quoi je parlais. cest la memoire ca ?
+
+Oui, exactement, et c'est le vrai apport de la boucle de ce test par rapport au
+test 5.
+
+Ma deuxieme question ne dit pas de quoi elle parle : "Et comment on mesure la
+similarite entre deux embeddings ?" arrive apres une question sur la recherche
+semantique. Grace a `MessageWindowChatMemory.withMaxMessages(20)`, LangChain4j
+renvoie les messages precedents au LLM en meme temps que la nouvelle question,
+donc le fil de la conversation est conserve.
+
+C'est precisement ce qui manquait au test 1, ou le LLM avait oublie mon prenom
+d'une question a l'autre. Ici le probleme est resolu sans que j'aie une seule
+ligne a ecrire pour gerer l'historique : c'est le proxy d'`AiServices` qui s'en
+charge.
+
+Attention a ne pas confondre les deux mecanismes, ils se ressemblent mais ne
+servent pas a la meme chose :
+
+- la **memoire** renvoie les messages precedents de **la conversation** ;
+- le **RAG** va chercher des morceaux pertinents dans **les documents**.
+
+Les deux ajoutent du texte a la requete envoyee au LLM, mais l'un apporte le
+contexte de l'echange et l'autre de la connaissance externe.
+
+### Q : comment je peux savoir si la reponse vient vraiment du pdf et pas de ce que le llm sait deja ?
+
+Bonne question, parce que sur ce support precis les deux sources se recouvrent
+beaucoup : le cours parle d'embeddings et de similarite, or un LLM connait deja
+tres bien ces sujets. Une reponse correcte ne prouve donc rien a elle seule.
+
+Ce qui montre que le RAG a servi, dans ma premiere reponse, c'est le **detail
+specifique au support** :
+
+> Par exemple, si l'utilisateur recherche "Recette facile pour gateau au
+> chocolat", les resultats obtenus seront des recettes contenant exactement ces
+> mots. [...] la recherche semantique pourrait retourner des resultats tels que
+> "gateau express", "fondant au chocolat" ou "dessert au chocolat simple".
+
+Cet exemple du gateau au chocolat est l'exemple precis de la diapo "Exemple 1" du
+support. Un LLM qui repondrait de memoire expliquerait la difference entre les
+deux recherches, mais n'aurait aucune raison de tomber sur cet exemple-la.
+
+Trois facons plus fiables de verifier :
+
+1. poser une question dont la reponse ne peut venir que du document : un numero
+   de version, le nom de l'auteur, le plan du support ;
+2. demander au LLM d'indiquer la diapo ou il a trouve l'information, comme le
+   suggere l'enonce (resultat souvent approximatif, parce que les numeros de
+   diapo survivent mal au decoupage en segments) ;
+3. activer le logging des requetes avec `logRequestsAndResponses(true)` et
+   regarder ce qui est reellement envoye au LLM. C'est la methode la plus sure,
+   et c'est ce que je ferai au test 7.
+
+Enfin, l'enonce previent que les reponses peuvent decevoir sur ce PDF, pour trois
+raisons : le modele d'embeddings par defaut est mauvais en francais (demontre au
+test 4), le decoupage par defaut n'est pas forcement adapte, et surtout le PDF
+contient six diapos par page, donc le texte extrait melange des diapos qui n'ont
+rien a voir entre elles dans un meme segment. Mes deux questions sont bien
+tombees parce qu'elles portaient sur des diapos voisines du meme chapitre.
