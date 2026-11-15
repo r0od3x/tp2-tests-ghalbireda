@@ -1,11 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <!-- Les logs vont sur la sortie d'erreur, pour ne pas se melanger aux
+             affichages du programme sur la sortie standard. Pratique au test 7,
+             ou le JSON des requetes noie completement les questions-reponses. -->
+        <target>System.err</target>
         <encoder>
             <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
         </encoder>
     </appender>
 
+    <!-- TEST 7 : le JSON des requetes et des reponses est affiche des que
+         logRequests(true) et logResponses(true) sont mis sur le builder du
+         modele. LoggingHttpClient journalise au niveau INFO, donc inutile de
+         passer en DEBUG, qui n'ajoute que du bruit venant des autres classes. -->
     <logger name="dev.langchain4j" level="INFO"/>
     <logger name="org.apache.fontbox" level="WARN"/>
 

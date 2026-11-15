@@ -787,3 +787,274 @@ test 4), le decoupage par defaut n'est pas forcement adapte, et surtout le PDF
 contient six diapos par page, donc le texte extrait melange des diapos qui n'ont
 rien a voir entre elles dans un meme segment. Mes deux questions sont bien
 tombees parce qu'elles portaient sur des diapos voisines du meme chapitre.
+
+---
+
+## Test 7 : utilisation d'outils
+
+### Q : sans outil, jai posé la question du parapluie et il ma répondu un truc vague. cest ce quon attend ?
+
+Oui. Reponse obtenue avec le LLM seul :
+
+> Pour savoir si vous devez emporter un parapluie pour votre voyage a Paris, il
+> est conseille de verifier la meteo prevue pour ces jours-la. Paris peut avoir
+> des conditions meteorologiques variables, et il est courant qu'il pleuve, meme
+> brievement. [...] Assurez-vous de consulter les previsions meteorologiques
+> juste avant de partir.
+
+C'est poli, c'est bien ecrit, et c'est totalement inutile : il me renvoie
+consulter la meteo moi-meme. C'est le meme probleme qu'au test 1 avec l'heure.
+Un LLM n'a pas d'acces au temps reel, et les previsions de la semaine prochaine
+ne peuvent pas etre dans ses donnees d'entrainement.
+
+Au moins il n'invente pas de chiffres, ce qui aurait ete pire. Avec l'outil, la
+meme question donne de vraies previsions datees.
+
+### Q : dans le JSON envoyé au llm mes parametres sappellent `arg0`, `arg1`, `arg2` au lieu de latitude, longitude... pourquoi ?
+
+Parce que par defaut le compilateur Java ne conserve pas le nom des parametres
+dans le fichier `.class`. Il n'en a pas besoin pour executer le code, donc il les
+remplace par `arg0`, `arg1`... LangChain4j construit la description des outils
+par introspection, il ne trouve que ces noms-la et les envoie tels quels au LLM.
+
+La correction se fait dans le `pom.xml`, sur le plugin de compilation :
+
+```xml
+<configuration>
+    <parameters>true</parameters>
+</configuration>
+```
+
+Apres recompilation, le JSON envoye au LLM devient lisible :
+
+```json
+"parameters" : {
+  "type" : "object",
+  "properties" : {
+    "latitude" : { "type" : "number", "description" : "latitude du lieu, en degres decimaux (par exemple 48.85 pour Paris)" },
+    "longitude" : { "type" : "number", "description" : "longitude du lieu, en degres decimaux (par exemple 2.35 pour Paris)" },
+    "nombreJours" : { "type" : "integer", "description" : "nombre de jours de prevision, jour courant compris, entre 1 et 16" }
+  },
+  "required" : [ "latitude", "longitude", "nombreJours" ]
+}
+```
+
+Ce n'est pas que cosmetique : le nom du parametre fait partie de ce que le LLM
+lit pour decider quoi mettre dedans. `latitude` l'aide, `arg0` ne lui dit rien,
+et il doit alors se fier uniquement a la description du `@P`.
+
+### Q : jarrive pas a suivre ce qui se passe. le llm execute mon code java ?
+
+Non, jamais. C'est le point le plus important a comprendre, et le logging le
+montre tres bien. Le LLM ne peut rien executer : il ne sait que produire du
+texte. Ce qu'il fait, c'est **demander** a l'application d'appeler une methode,
+et c'est l'application qui l'execute.
+
+Voici les echanges pour une seule question, releves dans les logs avec
+`logRequests(true)` et `logResponses(true)`. En gras, qui envoie quoi.
+
+**Echange 1, REQUETE envoyee par mon application a l'API d'OpenAI.** Elle
+contient le message systeme, la question de l'utilisateur, et surtout la
+description des deux outils disponibles, construite a partir des annotations
+`@Tool` et `@P` :
+
+```json
+"messages" : [ {
+  "role" : "system",
+  "content" : "Tu es un assistant generaliste francophone. [...]"
+}, {
+  "role" : "user",
+  "content" : "J'ai prevu d'aller aujourd'hui a la ville de Zzyzx pour un sejour de 3 jours. Est-ce que tu me conseilles de mettre un parapluie dans ma valise ?"
+} ],
+"tools" : [ {
+  "type" : "function",
+  "function" : {
+    "name" : "coordonnees",
+    "description" : "Donne la latitude et la longitude d'une ville a partir de son nom. [...]",
+    "parameters" : { "properties" : { "ville" : { "type" : "string", "description" : "nom de la ville en anglais, [...] par exemple \"Rabat,Morocco\"" } }, "required" : [ "ville" ] }
+  }
+}, {
+  "type" : "function",
+  "function" : {
+    "name" : "isPluiePrevue",
+    "description" : "Donne les previsions de precipitations d'un lieu, identifie par sa latitude et sa longitude [...]",
+    "parameters" : { "properties" : { "latitude" : {...}, "longitude" : {...}, "nombreJours" : {...} }, "required" : [ "latitude", "longitude", "nombreJours" ] }
+  }
+} ]
+```
+
+**Echange 1, REPONSE de l'API.** Le LLM ne repond pas a l'utilisateur : il
+demande un appel d'outil. `content` est `null`, et `finish_reason` vaut
+`tool_calls` au lieu de `stop` :
+
+```json
+"message": {
+  "role": "assistant",
+  "content": null,
+  "tool_calls": [ {
+    "id": "call_ZJGy87yXSQ1UE086L60U6oB7",
+    "type": "function",
+    "function": { "name": "coordonnees", "arguments": "{\"ville\":\"Zzyzx,USA\"}" }
+  } ]
+},
+"finish_reason": "tool_calls"
+```
+
+C'est LangChain4j qui voit ce `finish_reason`, appelle lui-meme
+`meteoTool.coordonnees("Zzyzx,USA")` et recupere le resultat. Mon code n'a rien a
+faire : tout est gere par le proxy d'`AiServices`.
+
+**Echange 2, REQUETE envoyee par mon application.** Tout l'historique est
+renvoye, augmente de deux messages : la demande d'appel faite par le LLM
+(`role: assistant`) et le resultat de l'execution (`role: tool`), relie a la
+demande par le meme `tool_call_id` :
+
+```json
+"messages" : [
+  { "role" : "system",    "content" : "Tu es un assistant generaliste francophone. [...]" },
+  { "role" : "user",      "content" : "J'ai prevu d'aller aujourd'hui a la ville de Zzyzx [...]" },
+  { "role" : "assistant", "tool_calls" : [ { "id" : "call_ZJGy87yXSQ1UE086L60U6oB7", "type" : "function",
+                                             "function" : { "name" : "coordonnees", "arguments" : "{\"ville\":\"Zzyzx,USA\"}" } } ] },
+  { "role" : "tool",      "tool_call_id" : "call_ZJGy87yXSQ1UE086L60U6oB7",
+                          "content" : "Ville inconnue : Zzyzx,USA" }
+]
+```
+
+Le role `tool` est nouveau : il n'existait dans aucun des tests precedents. Et
+les outils sont **redeclares** dans cette requete, puisque l'API est sans etat.
+
+**Echange 2, REPONSE de l'API.** Cette fois le LLM redige sa reponse pour
+l'utilisateur, `finish_reason` repasse a `stop` :
+
+```json
+"message": {
+  "role": "assistant",
+  "content": "Je ne trouve pas la ville de Zzyzx. Pourrais-tu verifier l'orthographe ou me donner un autre nom de ville ?"
+},
+"finish_reason": "stop"
+```
+
+A noter que l'exception levee par mon outil (`Ville inconnue : Zzyzx,USA`) n'a
+pas fait planter l'application : LangChain4j l'a transmise au LLM comme resultat
+de l'outil, et le LLM en a fait une phrase comprehensible. Pour une question avec
+un nom de ville trouve, il y a un echange de plus : le LLM demande `coordonnees`,
+puis `isPluiePrevue` avec les coordonnees obtenues, puis redige sa reponse, soit
+trois allers-retours pour une seule question de l'utilisateur.
+
+### Q : jai posé 2 fois exactement la meme question sur Zzyzx et jai eu 2 resultats differents, une fois il trouve la ville et une fois non. jai un bug ?
+
+Non, et c'est instructif. La difference ne vient pas de mon code mais de la
+valeur que le LLM choisit de mettre dans le parametre.
+
+- une fois il a appele `coordonnees("Zzyzx")` : l'API de geolocalisation a
+  trouve la ville, coordonnees 35.14 / -116.10, et j'ai eu de vraies previsions ;
+- une autre fois il a appele `coordonnees("Zzyzx,USA")` : l'API ne renvoie
+  aucun resultat pour cette chaine, mon outil a leve `Ville inconnue`, et le LLM
+  a repondu qu'il ne trouvait pas la ville.
+
+Le LLM a ajoute `,USA` de lui-meme, probablement influence par l'exemple
+`"Rabat,Morocco"` que j'ai mis dans la description du `@P`. Ce choix n'est pas
+deterministe : avec une temperature de 0,7, le meme prompt peut donner des
+arguments differents. C'est la meme variabilite qu'au test 3 avec "couch" et
+"sofa", sauf qu'ici elle change le resultat au lieu du style.
+
+Lecon pratique : la description d'un outil influence fortement comment il est
+appele, y compris de facon imprevue, et un outil doit etre robuste aux entrees
+approximatives que le LLM va lui envoyer. Ici je pourrais reessayer sans la
+partie apres la virgule avant de declarer la ville introuvable.
+
+Au passage, Zzyzx existe vraiment : c'est une localite de Californie, et l'API
+de geolocalisation la connait. Ce que l'enonce voulait montrer, c'est que le LLM
+seul ne connait pas ses coordonnees ; avec l'outil de geolocalisation, il peut
+les obtenir.
+
+### Q : jai demandé "finalement je pars demain" et il ma donné la meteo du 15 novembre, alors que demain cest le 16. pourquoi ?
+
+Parce que le LLM ne sait pas quel jour on est. C'est exactement le probleme de
+l'heure du test 1, qui revient par la bande.
+
+Il a bien compris qu'il fallait rappeler l'outil, et la memoire a fonctionne
+puisqu'il a garde le lieu de la question precedente sans que je le repete. Mais
+pour traduire "demain" en une date, il lui faut la date d'aujourd'hui, et rien
+dans la requete ne la lui donne. Mon outil renvoie des dates absolues
+(`2026-11-15`), le LLM les reorganise comme il peut.
+
+La correction serait d'ajouter la date du jour, soit dans le message systeme,
+soit via un petit outil `dateDuJour()`. C'est le genre de detail qui ne se voit
+qu'en testant avec des questions relatives ("demain", "la semaine prochaine").
+
+### Q : une seule question sur la pluie me coute combien, et comment je pourrais economiser des tokens avec un nouvel outil ?
+
+En additionnant les `total_tokens` de toutes les requetes HTTP de ma session de
+4 questions :
+
+```
+492 + 684 + 747 + 867 + 934 + 1001 + 1056 + 1244 = 7025 tokens sur 8 requetes
+```
+
+Pour la seule question sur Zzyzx, isolee dans une session neuve : 465 + 512 =
+**977 tokens**, pour une question a laquelle le LLM n'a meme pas pu repondre.
+Avec une ville trouvee, c'est trois allers-retours et on depasse largement le
+millier. A comparer aux 22 tokens de la question du test 2.
+
+Pourquoi ca coute autant : a chaque aller-retour, on renvoie **tout**, parce que
+l'API est sans etat. Le message systeme, toute la conversation, les messages
+`assistant`/`tool` deja echanges, et la declaration complete des deux outils avec
+toutes leurs descriptions. La declaration des outils fait a elle seule plusieurs
+centaines de tokens, et elle est repayee a chaque requete.
+
+**Comment economiser avec un nouvel outil** (c'est la question de l'enonce) :
+ecrire un seul outil qui prend directement un **nom de ville** et renvoie les
+previsions, en faisant les deux appels HTTP a l'interieur de la meme methode
+Java :
+
+```java
+@Tool("Donne les previsions de precipitations d'une ville a partir de son nom.")
+public String pluiePrevueDansVille(String ville, int nombreJours) {
+    double[] coord = coordonnees(ville);          // appel interne, pas un outil
+    return isPluiePrevue(coord[0], coord[1], nombreJours);
+}
+```
+
+Le gain est direct : le LLM n'a plus qu'un seul appel d'outil a demander au lieu
+de deux, donc deux allers-retours au lieu de trois. L'aller-retour supprime est
+celui qui transportait tout l'historique **et** toute la declaration des outils,
+soit plusieurs centaines de tokens d'un coup. En plus, un seul outil a declarer
+au lieu de deux allege chacune des requetes restantes.
+
+L'idee generale : chaque outil supplementaire coute des tokens dans toutes les
+requetes, et chaque appel d'outil coute un aller-retour complet. Quand deux
+outils sont presque toujours utilises l'un apres l'autre, il vaut mieux les
+regrouper en une seule methode Java. L'enchainement se fait alors dans mon code,
+gratuitement, au lieu de passer par le LLM.
+
+### Q : les logs du test 7 noient completement les questions et les reponses, je vois plus rien
+
+Deux reglages ont suffi.
+
+D'abord, dans `logback.xml`, envoyer les logs sur la sortie d'erreur :
+
+```xml
+<appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <target>System.err</target>
+```
+
+Par defaut `ConsoleAppender` ecrit sur `System.out`, exactement la ou mon
+programme affiche ses questions et reponses, d'ou le melange. En separant les
+deux flux, je peux rediriger le JSON dans un fichier et garder la conversation
+lisible a l'ecran.
+
+Ensuite, j'avais mis le logger `dev.langchain4j` en `DEBUG` en pensant que c'etait
+necessaire pour voir le JSON. En fait non : `LoggingHttpClient` journalise au
+niveau `INFO`, comme le montrent les lignes de log elles-memes
+(`INFO [main] d.l.h.client.log.LoggingHttpClient - HTTP request:`). Le niveau
+`DEBUG` n'ajoutait que du bruit venant des autres classes de LangChain4j. Je suis
+donc revenu a `INFO`, et le JSON des requetes et des reponses s'affiche toujours.
+
+Ce qui declenche reellement l'affichage du JSON, ce n'est pas le niveau de log
+mais les deux options du builder du modele :
+
+```java
+.logRequests(true)
+.logResponses(true)
+```
